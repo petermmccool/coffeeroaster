@@ -61,7 +61,7 @@ ESP8266WebServer server(80);
   int setpoint;
 };
 
-std::vector<setpoint_record> setpoint_records_general = {
+std::vector<setpoint_record> setpoint_records_general2 = {
   {60*1000, 120},
   {120 *1000,120},
   {180 *1000,140},
@@ -78,7 +78,8 @@ std::vector<setpoint_record> setpoint_records_general = {
   {840 *1000,215},
   {900 *1000,220}};
 
-std::vector<setpoint_record> setpoint_records_chesterton = {
+// started life as a profile for the Chesterton, but I find I prefer the results :)
+  std::vector<setpoint_record> setpoint_records_general = {
   {60*1000, 120},
   {120 *1000,120},
   {180 *1000,140},
@@ -93,6 +94,22 @@ std::vector<setpoint_record> setpoint_records_chesterton = {
   {720 *1000,205},
   {780 *1000,210},
   {840 *1000,215}};
+
+std::vector<setpoint_record> setpoint_records_chesterton = {
+  {60*1000, 120},
+  {120 *1000,120},
+  {180 *1000,140},
+  {240 *1000,140},
+  {300 *1000,160},
+  {360 *1000,160},
+  {420 *1000,180},
+  {480 *1000,180},
+  {540 *1000,190},
+  {600 *1000,200},
+  {660 *1000,200},
+  {720 *1000,205},
+  {780 *1000,205},
+  {840 *1000,210}};
 
 void setup()
 {
