@@ -1,6 +1,6 @@
-#include <ESP8266WiFi.h>
+#include <WiFi.h>
 #include <WiFiClient.h>
-#include <ESP8266WebServer.h>
+#include <WebServer.h>
 #include "radio.h" 
 #include "max6675.h"
 #include <Wire.h>
@@ -12,10 +12,12 @@
 #define APPSK  "thereisnospoon"
 #endif
 
+#define D3 32
+#define D4 33
 
-int ktcSO = 12;
-int ktcCS = 13;
-int ktcCLK = 14;
+int ktcSO = 19;
+int ktcCS = 23;
+int ktcCLK = 5;
  
 MAX6675 ktc(ktcCLK, ktcCS, ktcSO);
 
@@ -25,7 +27,7 @@ String output;
 const char *ssid = APSSID;
 const char *password = APPSK;
 
-ESP8266WebServer server(80);
+WebServer server(80);
 
 /* This unbelievably shabby code is meant to roast coffee :)
  *  It's intended to control a remote-control mains switch via a 433Mhz transmitter.
@@ -204,7 +206,7 @@ double calculate_setpoint(int time, std::vector<setpoint_record> setpoint_record
 void pid_controller() {
   // based on https://github.com/br3ttb/Arduino-PID-Library/blob/master/examples/PID_RelayOutput/PID_RelayOutput.ino
   double setpoint, input, output;
-  int target_temp = 216;
+  int target_temp = 211;
 
   digitalWrite(D3, HIGH);
   //Specify the links and initial tuning parameters
