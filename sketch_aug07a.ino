@@ -5,12 +5,10 @@
 #include "max6675.h"
 #include <Wire.h>
 #include <PID_v1.h>
-
-
-#ifndef APSSID
-#define APSSID "ESPap"
-#define APPSK  "thereisnospoon"
-#endif
+#include "config.h"
+#include <AzureIoTHub.h>
+#include "AzureIoTProtocol_MQTT.h"
+#include "iothubtransportmqtt.h"
 
 #define D3 32
 #define D4 33
@@ -18,12 +16,22 @@
 int ktcSO = 19;
 int ktcCS = 23;
 int ktcCLK = 5;
+=======
  
 MAX6675 ktc(ktcCLK, ktcCS, ktcSO);
 
+// IoT stuff
+#define USE_BALTIMORE_CERT
+IOTHUB_DEVICE_CLIENT_LL_HANDLE device_ll_handle;
+IOTHUB_MESSAGE_HANDLE message_handle;
+IOTHUB_CLIENT_RESULT result;
+static const char* connectionString = DEVICE_CONNECTION_STRING;
+
+// No garbage collection, grumble grumble
 String output;
+String message;
 
-
+// WiFi/webserver stuff
 const char *ssid = APSSID;
 const char *password = APPSK;
 
@@ -33,7 +41,7 @@ WebServer server(80);
  *  It's intended to control a remote-control mains switch via a 433Mhz transmitter.
  *  It's loosely based on this Jaycar project:
  *  https://www.jaycar.com.au/wifi-mains-switch
- *  It also talks to a thermocouple via a MAX6675 thermocouple amp.
+ *  It also listens to a thermocouple via a MAX6675 thermocouple amp.
  *  The idea is to plug a popcorn popper into the remote-control mains switch, then switch it on and
  *  off using the transmitter. You specify a target temperature; when the thermocouple detects it twice
  *  in a row, it switches the whole thing off.
@@ -113,87 +121,83 @@ std::vector<setpoint_record> setpoint_records_chesterton = {
   {780 *1000,205},
   {840 *1000,210}};
 
+static void connection_status_callback(IOTHUB_CLIENT_CONNECTION_STATUS result, IOTHUB_CLIENT_CONNECTION_STATUS_REASON reason, void* user_context)
+{
+  (void)reason;
+  (void)user_context;
+  // This sample DOES NOT take into consideration network outages.
+  if (result == IOTHUB_CLIENT_CONNECTION_AUTHENTICATED)
+    Serial.print("Connection status: The device client is connected to iothub\r\n");
+  else {
+    Serial.print("Connection status: The device client has been disconnected\r\n");
+    Serial.print(IOTHUB_CLIENT_CONNECTION_STATUS_REASONStrings(reason);
+  }
+}
+
+static void send_confirm_callback(IOTHUB_CLIENT_CONFIRMATION_RESULT result, void* userContextCallback)
+{
+    (void)userContextCallback;
+    Serial.print("Confirmation callback received for message %lu with result ");
+    Serial.println(IOTHUB_CLIENT_CONFIRMATION_RESULTStrings(result));
+}
+
 void setup()
 {
   Serial.begin(9600);
   pinMode(D4, OUTPUT);
   pinMode(D3, OUTPUT);
+
+  setup_webserver();
+
+  IOTHUB_CLIENT_TRANSPORT_PROVIDER protocol = MQTT_Protocol;
+
+  (void)IoTHub_Init();
+  device_ll_handle = IoTHubDeviceClient_LL_CreateFromConnectionString(connectionString, protocol);
+  Serial.print("Creating IoTHub Device handle\r\n");
+
+  if (device_ll_handle == NULL)
+  {
+      Serial.print("Error AZ002: Failure creating Iothub device. Hint: Check you connection string.\r\n");
+  }
+  else
+  {
+    // Setting the Trusted Certificate.
+    IoTHubDeviceClient_LL_SetOption(device_ll_handle, OPTION_TRUSTED_CERT, certificates);
+
+    bool urlEncodeOn = true;
+    IoTHubDeviceClient_LL_SetOption(device_ll_handle, OPTION_AUTO_URL_ENCODE_DECODE, &urlEncodeOn);
+
+    // Setting connection status callback to get indication of connection to iothub
+    (void)IoTHubDeviceClient_LL_SetConnectionStatusCallback(device_ll_handle, connection_status_callback, NULL);
+    IoTHubDeviceClient_LL_DoWork(device_ll_handle);
+    Serial.println("set connection status callback");
+  }
 }
 
 double logStateAndReturnTemperature(int time_offset, int setpoint, bool state) {
   int current_time = millis() - time_offset;
-  Serial.print(setpoint);
-  output += setpoint;
-  Serial.print(",");
-  output += ",";
-  Serial.print(current_time);
-  output += current_time;
-  Serial.print(",");
-  output += ",";
+  message = setpoint;
+  message += ",";
+  message += current_time;
+  message += ",";
   double temp = ktc.readCelsius(); 
-  Serial.print(temp);
-  output += temp;
-  if(state) {
-    Serial.print(",ON\r\n");
-    output += ",ON\r\n";
-  }
-  else {
-    Serial.print(",OFF\r\n");
-    output += ",OFF\r\n";
-  }
+  message += temp;
+  if(state) 
+    message += ",ON\r\n";
+  else
+    message += ",OFF\r\n";
+
+  Serial.print(message);
+  output += message;
+
+  message_handle = IoTHubMessage_CreateFromString(message.c_str());
+
+  Serial.print("Sending message %d to IoTHub\r\n");
+  result = IoTHubDeviceClient_LL_SendEventAsync(device_ll_handle, message_handle, send_confirm_callback, NULL);
+  // should probs do something with result...
+  IoTHubMessage_Destroy(message_handle);
   return temp;
 }
-
-void non_pid_controller() {
-  int start = millis();
-  int on_interval = 10000;
-  int off_interval = 20000;
-  int max_temp = 0;
-  int temp = 0;
-  int target_temp = 220;
-  int iterations = 0;
-  int max_iterations = 40;
-
-  // exit criteria: target_temp exceeded twice OR max iterations exceeded
-  while(temp < target_temp && max_temp < target_temp && iterations <= max_iterations) {
-        
-    max_temp = max(temp, max_temp);
-    radioSwitch(D4, 1, true);
-    temp = logStateAndReturnTemperature(start, 0, "ON");
-    delay(on_interval);
-        
-    radioSwitch(D4, 1, false); //sw1 OFF
-    temp = logStateAndReturnTemperature(start, 0, "OFF");
-    delay(off_interval);
-    iterations++;
-  }
-  while(true)  radioSwitch(D4, 1, false); //sw1 OFF
-}
-
-// latest attempt at a roast profile. Big differences:
-// no more than 10 degrees per minute temp change (the PID controller doesn't seem to like
-// big changes - no surprise there
-// tail temp rise off after first crack (from 660 onwards)
-// Seems to work pretty well, except for the Chesterton A (see below)
-double calculate_setpoint_general(int time) {
-  if(time < 60  *1000) return 120;
-  if(time < 120 *1000) return 120;
-  if(time < 180 *1000) return 140;
-  if(time < 240 *1000) return 140;
-  if(time < 300 *1000) return 160;
-  if(time < 360 *1000) return 160;
-  if(time < 420 *1000) return 180;
-  if(time < 480 *1000) return 180;
-  if(time < 540 *1000) return 200;
-  if(time < 600 *1000) return 200;
-  if(time < 660 *1000) return 205;
-  if(time < 720 *1000) return 205;
-  if(time < 780 *1000) return 210;
-  if(time < 840 *1000) return 215;  
-  if(time < 900 *1000) return 220;  
-  return 223;
-}
-
 
 double calculate_setpoint(int time, std::vector<setpoint_record> setpoint_records, int target_temp) {  
 
@@ -206,7 +210,7 @@ double calculate_setpoint(int time, std::vector<setpoint_record> setpoint_record
 void pid_controller() {
   // based on https://github.com/br3ttb/Arduino-PID-Library/blob/master/examples/PID_RelayOutput/PID_RelayOutput.ino
   double setpoint, input, output;
-  int target_temp = 211;
+  int target_temp = 216;
 
   digitalWrite(D3, HIGH);
   //Specify the links and initial tuning parameters
@@ -217,7 +221,7 @@ void pid_controller() {
   int window_start_time = millis();
 
   //initialize the variables we're linked to
-  setpoint = calculate_setpoint(millis() - window_start_time, setpoint_records_chesterton, target_temp);
+  setpoint = calculate_setpoint(millis() - window_start_time, setpoint_records_general, target_temp);
 
   //tell the PID to range between 0 and the full window size
   my_pid.SetOutputLimits(0, window_size);
@@ -225,17 +229,19 @@ void pid_controller() {
   //turn the PID on
   my_pid.SetMode(AUTOMATIC);
   input = logStateAndReturnTemperature(0, setpoint, "OFF");
-  setup_webserver();
 
   // bail when we hit target temp, or have been running for 20 minutes.
   while(input <= target_temp && millis() <= 20*60*1000) {
-    setpoint = calculate_setpoint(millis() - window_start_time, setpoint_records_chesterton, target_temp);
+    setpoint = calculate_setpoint(millis() - window_start_time, setpoint_records_general, target_temp);
     my_pid.Compute();
+    IoTHubDeviceClient_LL_DoWork(device_ll_handle);
 
     bool state = output > setpoint;
     radioSwitch(D4, 1, state);
     input = logStateAndReturnTemperature(0, setpoint, state);
+    IoTHubDeviceClient_LL_DoWork(device_ll_handle);
     server.handleClient();
+    IoTHubDeviceClient_LL_DoWork(device_ll_handle);
   }
   Serial.print("Complete\n");
   digitalWrite(D3, LOW);
@@ -254,9 +260,16 @@ void setup_webserver() {
   delay(1000);
   Serial.print("Configuring access point...");
   /* You can remove the password parameter if you want the AP to be open. */
-  WiFi.softAP(ssid, password);
+  //WiFi.softAP(ssid, password);
+  WiFi.begin(ssid, password);
 
-  IPAddress myIP = WiFi.softAPIP();
+  int i = 0;
+  while (WiFi.status() != WL_CONNECTED) { // Wait for the Wi-Fi to connect
+    delay(1000);
+    Serial.print(++i); Serial.print(' ');
+  }
+
+  IPAddress myIP = WiFi.localIP();
   Serial.print("AP IP address: ");
   Serial.println(myIP);
   server.on("/", handleRoot);
