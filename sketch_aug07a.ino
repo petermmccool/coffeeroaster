@@ -6,9 +6,6 @@
 #include <Wire.h>
 #include <PID_v1.h>
 #include "config.h"
-#include <AzureIoTHub.h>
-#include "AzureIoTProtocol_MQTT.h"
-#include "iothubtransportmqtt.h"
 
 #define D3 32
 #define D4 33
@@ -16,16 +13,8 @@
 int ktcSO = 19;
 int ktcCS = 23;
 int ktcCLK = 5;
-=======
  
 MAX6675 ktc(ktcCLK, ktcCS, ktcSO);
-
-// IoT stuff
-#define USE_BALTIMORE_CERT
-IOTHUB_DEVICE_CLIENT_LL_HANDLE device_ll_handle;
-IOTHUB_MESSAGE_HANDLE message_handle;
-IOTHUB_CLIENT_RESULT result;
-static const char* connectionString = DEVICE_CONNECTION_STRING;
 
 // No garbage collection, grumble grumble
 String output;
@@ -121,26 +110,6 @@ std::vector<setpoint_record> setpoint_records_chesterton = {
   {780 *1000,205},
   {840 *1000,210}};
 
-static void connection_status_callback(IOTHUB_CLIENT_CONNECTION_STATUS result, IOTHUB_CLIENT_CONNECTION_STATUS_REASON reason, void* user_context)
-{
-  (void)reason;
-  (void)user_context;
-  // This sample DOES NOT take into consideration network outages.
-  if (result == IOTHUB_CLIENT_CONNECTION_AUTHENTICATED)
-    Serial.print("Connection status: The device client is connected to iothub\r\n");
-  else {
-    Serial.print("Connection status: The device client has been disconnected\r\n");
-    Serial.print(IOTHUB_CLIENT_CONNECTION_STATUS_REASONStrings(reason);
-  }
-}
-
-static void send_confirm_callback(IOTHUB_CLIENT_CONFIRMATION_RESULT result, void* userContextCallback)
-{
-    (void)userContextCallback;
-    Serial.print("Confirmation callback received for message %lu with result ");
-    Serial.println(IOTHUB_CLIENT_CONFIRMATION_RESULTStrings(result));
-}
-
 void setup()
 {
   Serial.begin(9600);
@@ -148,30 +117,6 @@ void setup()
   pinMode(D3, OUTPUT);
 
   setup_webserver();
-
-  IOTHUB_CLIENT_TRANSPORT_PROVIDER protocol = MQTT_Protocol;
-
-  (void)IoTHub_Init();
-  device_ll_handle = IoTHubDeviceClient_LL_CreateFromConnectionString(connectionString, protocol);
-  Serial.print("Creating IoTHub Device handle\r\n");
-
-  if (device_ll_handle == NULL)
-  {
-      Serial.print("Error AZ002: Failure creating Iothub device. Hint: Check you connection string.\r\n");
-  }
-  else
-  {
-    // Setting the Trusted Certificate.
-    IoTHubDeviceClient_LL_SetOption(device_ll_handle, OPTION_TRUSTED_CERT, certificates);
-
-    bool urlEncodeOn = true;
-    IoTHubDeviceClient_LL_SetOption(device_ll_handle, OPTION_AUTO_URL_ENCODE_DECODE, &urlEncodeOn);
-
-    // Setting connection status callback to get indication of connection to iothub
-    (void)IoTHubDeviceClient_LL_SetConnectionStatusCallback(device_ll_handle, connection_status_callback, NULL);
-    IoTHubDeviceClient_LL_DoWork(device_ll_handle);
-    Serial.println("set connection status callback");
-  }
 }
 
 double logStateAndReturnTemperature(int time_offset, int setpoint, bool state) {
@@ -190,12 +135,6 @@ double logStateAndReturnTemperature(int time_offset, int setpoint, bool state) {
   Serial.print(message);
   output += message;
 
-  message_handle = IoTHubMessage_CreateFromString(message.c_str());
-
-  Serial.print("Sending message %d to IoTHub\r\n");
-  result = IoTHubDeviceClient_LL_SendEventAsync(device_ll_handle, message_handle, send_confirm_callback, NULL);
-  // should probs do something with result...
-  IoTHubMessage_Destroy(message_handle);
   return temp;
 }
 
@@ -234,14 +173,11 @@ void pid_controller() {
   while(input <= target_temp && millis() <= 20*60*1000) {
     setpoint = calculate_setpoint(millis() - window_start_time, setpoint_records_general, target_temp);
     my_pid.Compute();
-    IoTHubDeviceClient_LL_DoWork(device_ll_handle);
 
     bool state = output > setpoint;
     radioSwitch(D4, 1, state);
     input = logStateAndReturnTemperature(0, setpoint, state);
-    IoTHubDeviceClient_LL_DoWork(device_ll_handle);
     server.handleClient();
-    IoTHubDeviceClient_LL_DoWork(device_ll_handle);
   }
   Serial.print("Complete\n");
   digitalWrite(D3, LOW);
