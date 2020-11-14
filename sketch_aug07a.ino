@@ -1,59 +1,47 @@
-#include <ESP8266WiFi.h>
+#include <WiFi.h>
 #include <WiFiClient.h>
-#include <ESP8266WebServer.h>
+#include <WebServer.h>
 #include "radio.h" 
 #include "max6675.h"
 #include <Wire.h>
 #include <PID_v1.h>
+#include "config.h"
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BME280.h>
 
+#define D3 32
+#define D4 33
 
-#ifndef APSSID
-#define APSSID "ESPap"
-#define APPSK  "thereisnospoon"
-#endif
-
-
-int ktcSO = 12;
-int ktcCS = 13;
-int ktcCLK = 14;
+int thermocoupleSO = 19;
+int thermocoupleCS = 23;
+int thermocoupleCLK = 5;
  
-MAX6675 ktc(ktcCLK, ktcCS, ktcSO);
+MAX6675 thermocouple(thermocoupleCLK, thermocoupleCS, thermocoupleSO);
+Adafruit_BME280 ambient_temperature_sensor;
 
+// No garbage collection, grumble grumble
 String output;
+String message;
 
-
+// WiFi/webserver stuff
 const char *ssid = APSSID;
 const char *password = APPSK;
 
-ESP8266WebServer server(80);
+WebServer server(80);
 
 /* This unbelievably shabby code is meant to roast coffee :)
  *  It's intended to control a remote-control mains switch via a 433Mhz transmitter.
  *  It's loosely based on this Jaycar project:
  *  https://www.jaycar.com.au/wifi-mains-switch
- *  It also talks to a thermocouple via a MAX6675 thermocouple amp.
+ *  It also listens to a thermocouple via a MAX6675 thermocouple amp, which is on the SPI bus
  *  The idea is to plug a popcorn popper into the remote-control mains switch, then switch it on and
  *  off using the transmitter. You specify a target temperature; when the thermocouple detects it twice
  *  in a row, it switches the whole thing off.
- *  It also logs timestamped temperature measurements out to the serial port.
- *  So it's pretty basic:
- *    switch on for x
- *    measure temp, record max
- *    switch off for x
- *    measure temp, record max
+ *  It also logs timestamped temperature measurements out to the serial port. Format:
+ *  setpoint,current_time,thermocouple_reading,ambient_temperature,humidity,relay_state.
+ *  Temperatures are in Celsius.
+ *  It uses a PID controller to decide when to switch the popper on/off
  *    
- * The appeal of this is that I can roast in a fairly repeatable way using common household items while
- * not messing with mains voltage (so no need to modify the popper, for example).
- * 
- * What would obvs be better from a repeatability p.o.v. would be to do some sort of PID type thing.
- * I've done the reading - this looks feasible. The appeal here is that this *should* be more or less
- * indifferent to ambient air temperature.
- * From the looks of things, a 30 second sampling interval is a decent compromise, bearing in mind that
- * each sampling cycle involves 1 cycle on the relay. Assuming 140 cycles to roast a batch (of about 220g),
- * and a working life of 100,000 cycles, that's 700 roasts, or about 150kg of coffee. So that's probably OK.
- * The switch is a whole $9.95, so that's, like, replacing a $10 part after 2 years of daily use. Meh.
- *
- * Targeting a "LOLIN WeMos D1 R2 & Mini" works OK. Targeting a generic 8266 does not.
  */
 
  struct setpoint_record {
@@ -116,82 +104,39 @@ void setup()
   Serial.begin(9600);
   pinMode(D4, OUTPUT);
   pinMode(D3, OUTPUT);
+  bool status = ambient_temperature_sensor.begin(0x77); // I think? or 0x76?
+  if (!status) {
+    Serial.println("Could not find ambient temperature sensor");
+  }
+  
+
+  setup_webserver();
 }
 
 double logStateAndReturnTemperature(int time_offset, int setpoint, bool state) {
   int current_time = millis() - time_offset;
-  Serial.print(setpoint);
-  output += setpoint;
-  Serial.print(",");
-  output += ",";
-  Serial.print(current_time);
-  output += current_time;
-  Serial.print(",");
-  output += ",";
-  double temp = ktc.readCelsius(); 
-  Serial.print(temp);
-  output += temp;
-  if(state) {
-    Serial.print(",ON\r\n");
-    output += ",ON\r\n";
-  }
-  else {
-    Serial.print(",OFF\r\n");
-    output += ",OFF\r\n";
-  }
+  message = setpoint;
+  message += ",";
+  message += current_time;
+  message += ",";
+  double temp = thermocouple.readCelsius(); 
+  message += temp;
+  double ambient_temp = ambient_temperature_sensor.readTemperature();
+  message += ",";
+  message += ambient_temp;
+  double humidity = ambient_temperature_sensor.readHumidity();
+  message += ",";
+  message += humidity;
+  if(state) 
+    message += ",ON\r\n";
+  else
+    message += ",OFF\r\n";
+
+  Serial.print(message);
+  output += message;
+
   return temp;
 }
-
-void non_pid_controller() {
-  int start = millis();
-  int on_interval = 10000;
-  int off_interval = 20000;
-  int max_temp = 0;
-  int temp = 0;
-  int target_temp = 220;
-  int iterations = 0;
-  int max_iterations = 40;
-
-  // exit criteria: target_temp exceeded twice OR max iterations exceeded
-  while(temp < target_temp && max_temp < target_temp && iterations <= max_iterations) {
-        
-    max_temp = max(temp, max_temp);
-    radioSwitch(D4, 1, true);
-    temp = logStateAndReturnTemperature(start, 0, "ON");
-    delay(on_interval);
-        
-    radioSwitch(D4, 1, false); //sw1 OFF
-    temp = logStateAndReturnTemperature(start, 0, "OFF");
-    delay(off_interval);
-    iterations++;
-  }
-  while(true)  radioSwitch(D4, 1, false); //sw1 OFF
-}
-
-// latest attempt at a roast profile. Big differences:
-// no more than 10 degrees per minute temp change (the PID controller doesn't seem to like
-// big changes - no surprise there
-// tail temp rise off after first crack (from 660 onwards)
-// Seems to work pretty well, except for the Chesterton A (see below)
-double calculate_setpoint_general(int time) {
-  if(time < 60  *1000) return 120;
-  if(time < 120 *1000) return 120;
-  if(time < 180 *1000) return 140;
-  if(time < 240 *1000) return 140;
-  if(time < 300 *1000) return 160;
-  if(time < 360 *1000) return 160;
-  if(time < 420 *1000) return 180;
-  if(time < 480 *1000) return 180;
-  if(time < 540 *1000) return 200;
-  if(time < 600 *1000) return 200;
-  if(time < 660 *1000) return 205;
-  if(time < 720 *1000) return 205;
-  if(time < 780 *1000) return 210;
-  if(time < 840 *1000) return 215;  
-  if(time < 900 *1000) return 220;  
-  return 223;
-}
-
 
 double calculate_setpoint(int time, std::vector<setpoint_record> setpoint_records, int target_temp) {  
 
@@ -215,7 +160,7 @@ void pid_controller() {
   int window_start_time = millis();
 
   //initialize the variables we're linked to
-  setpoint = calculate_setpoint(millis() - window_start_time, setpoint_records_chesterton, target_temp);
+  setpoint = calculate_setpoint(millis() - window_start_time, setpoint_records_general, target_temp);
 
   //tell the PID to range between 0 and the full window size
   my_pid.SetOutputLimits(0, window_size);
@@ -223,11 +168,10 @@ void pid_controller() {
   //turn the PID on
   my_pid.SetMode(AUTOMATIC);
   input = logStateAndReturnTemperature(0, setpoint, "OFF");
-  setup_webserver();
 
   // bail when we hit target temp, or have been running for 20 minutes.
   while(input <= target_temp && millis() <= 20*60*1000) {
-    setpoint = calculate_setpoint(millis() - window_start_time, setpoint_records_chesterton, target_temp);
+    setpoint = calculate_setpoint(millis() - window_start_time, setpoint_records_general, target_temp);
     my_pid.Compute();
 
     bool state = output > setpoint;
@@ -254,7 +198,7 @@ void setup_webserver() {
   /* You can remove the password parameter if you want the AP to be open. */
   WiFi.softAP(ssid, password);
 
-  IPAddress myIP = WiFi.softAPIP();
+  IPAddress myIP = WiFi.localIP();
   Serial.print("AP IP address: ");
   Serial.println(myIP);
   server.on("/", handleRoot);
