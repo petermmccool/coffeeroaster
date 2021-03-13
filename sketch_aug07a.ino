@@ -194,11 +194,15 @@ void pid_controller() {
   // the counter is just a really cheap & nasty way of making sure the popper doesn't stay on indefinitely
   digitalWrite(statusLEDPin, HIGH);
   int count = 0;
-  Serial.print("Warming up to " + start_temp + "\n");
+  Serial.print("Warming up to ");
+  Serial.print(start_temp);
+  Serial.print("\n");
   while(thermocouple.readCelsius() < start_temp && count < 20) {
     radioSwitch(popperPowerSwitch, 1, true);
     count++;
   }
+  Serial.print("Warmup complete\n");
+
 
   radioSwitch(popperPowerSwitch, 1, false);
  
